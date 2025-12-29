@@ -6,7 +6,7 @@ from github import Github, Auth
 # -------------------------------------------------
 # Configuration
 # -------------------------------------------------
-AGENT_CHECK_NAME = "AI PR Review Agent"  # Must match job name in ci.yml
+AGENT_CHECK_NAME = "AI PR Review Agent"
 
 
 # -------------------------------------------------
@@ -35,6 +35,9 @@ if "pull_request" not in event:
 repo_name = event["repository"]["full_name"]
 pr_number = event["pull_request"]["number"]
 
+pr_author = event["pull_request"]["user"]["login"]
+workflow_actor = event["sender"]["login"]
+
 
 # -------------------------------------------------
 # Evaluate CI checks using GitHub Checks API
@@ -43,7 +46,6 @@ def check_pr_status(repo_name, pr_number):
     repo = g.get_repo(repo_name)
     pr = repo.get_pull(pr_number)
 
-    # Always evaluate the latest commit
     latest_commit = pr.get_commits().reversed[0]
     check_runs = latest_commit.get_check_runs()
 
@@ -60,19 +62,16 @@ def check_pr_status(repo_name, pr_number):
             f"Conclusion: {check.conclusion}"
         )
 
-        # 🚫 Ignore this agent's own job
+        # 🚫 Ignore agent's own job
         if check.name == AGENT_CHECK_NAME:
             continue
 
-        # ⏳ CI still running
         if check.status != "completed":
             return "waiting"
 
-        # ❌ Any failure blocks PR
         if check.conclusion in ["failure", "cancelled", "timed_out"]:
             return "blocked"
 
-    # ✅ All relevant checks completed successfully
     return "approved"
 
 
@@ -83,7 +82,25 @@ def review_pr(repo_name, pr_number, decision):
     repo = g.get_repo(repo_name)
     pr = repo.get_pull(pr_number)
 
+    # ✅ CI passed
     if decision == "approved":
+
+        # 👤 Same author reviewing own PR
+        if pr_author == workflow_actor:
+            pr.create_review(
+                body=(
+                    "✅ **All CI checks passed**\n\n"
+                    "🤖 **AI Agent Review Result:** Approved\n\n"
+                    "ℹ️ *PR author and reviewer are the same. "
+                    "GitHub does not allow self-approval, so a comment is added instead.*\n\n"
+                    "🚀 **This PR is safe to merge.**"
+                ),
+                event="COMMENT",
+            )
+            print("Self-review detected. Approval-equivalent comment added.")
+            return
+
+        # 👥 Different reviewer → real approval
         pr.create_review(
             body="✅ All CI checks passed. PR approved by AI Agent.",
             event="APPROVE",
